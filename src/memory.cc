@@ -33,8 +33,16 @@
  * C++-specific allocator.
  */
 
+#ifdef __KERNEL__
+extern "C" {
+#include <linux/types.h>
+#include <linux/slab.h>
+}
+#else
 #include <stddef.h>
 #include <stdlib.h>
+#endif
+
 #include "stdexcept.h"
 #include "atomic.h"
 
@@ -78,7 +86,11 @@ void* operator new(size_t size)
 	{
 		size = 1;
 	}
+#ifdef __KERNEL__
+	void *mem = kmalloc(size, GFP_ATOMIC);
+#else
 	void * mem = malloc(size);
+#endif
 	while (0 == mem)
 	{
 		new_handler h = std::get_new_handler();
@@ -90,7 +102,11 @@ void* operator new(size_t size)
 		{
 			throw std::bad_alloc();
 		}
+#ifdef __KERNEL__
+		mem = kmalloc(size, GFP_ATOMIC);
+#else
 		mem = malloc(size);
+#endif
 	}
 
 	return mem;
@@ -115,7 +131,11 @@ void operator delete(void * ptr)
 throw()
 #endif
 {
+#ifdef __KERNEL__
+	kfree(ptr);
+#else
 	free(ptr);
+#endif
 }
 
 

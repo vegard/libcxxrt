@@ -22,8 +22,14 @@
 
 #ifndef __CXXABI_H_
 #define __CXXABI_H_
+
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
+
 #include "unwind.h"
 namespace std 
 {

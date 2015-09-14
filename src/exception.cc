@@ -24,12 +24,21 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef __KERNEL__
+extern "C" {
+#include <linux/bug.h>
+#include <linux/percpu.h>
+#include <linux/slab.h>
+}
+#else
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include <pthread.h>
+#endif
+
 #include "typeinfo.h"
 #include "dwarf_eh.h"
 #include "atomic.h"
@@ -286,6 +295,12 @@ namespace std
 
 using namespace ABI_NAMESPACE;
 
+#ifdef __KERNEL__
+extern "C" void abort(void)
+{
+	BUG();
+}
+#endif
 
 
 /** The global termination handler. */
@@ -293,8 +308,12 @@ static terminate_handler terminateHandler = abort;
 /** The global unexpected exception handler. */
 static unexpected_handler unexpectedHandler = std::terminate;
 
+#ifdef __KERNEL__
+DEFINE_PER_CPU(__cxa_thread_info *, eh_key);
+#else
 /** Key used for thread-local data. */
 static pthread_key_t eh_key;
+#endif
 
 
 /**
@@ -347,14 +366,20 @@ static void thread_cleanup(void* thread_info)
 			free_exception_list(info->globals.caughtExceptions);
 		}
 	}
+#ifdef __KERNEL__
+	kfree(thread_info);
+#else
 	free(thread_info);
+#endif
 }
 
 
+#ifndef __KERNEL__
 /**
  * Once control used to protect the key creation.
  */
 static pthread_once_t once_control = PTHREAD_ONCE_INIT;
+#endif
 
 /**
  * We may not be linked against a full pthread implementation.  If we're not,
@@ -371,6 +396,9 @@ static __cxa_thread_info singleThreadInfo;
  */
 static void init_key(void)
 {
+#ifdef __KERNEL__
+	__this_cpu_write(eh_key, 0);
+#else
 	if ((0 == pthread_key_create) ||
 	    (0 == pthread_setspecific) ||
 	    (0 == pthread_getspecific))
@@ -382,6 +410,7 @@ static void init_key(void)
 	pthread_setspecific(eh_key, reinterpret_cast<void *>(0x42));
 	fakeTLS = (pthread_getspecific(eh_key) != reinterpret_cast<void *>(0x42));
 	pthread_setspecific(eh_key, 0);
+#endif
 }
 
 /**
@@ -389,6 +418,14 @@ static void init_key(void)
  */
 static __cxa_thread_info *thread_info()
 {
+#ifdef __KERNEL__
+	__cxa_thread_info *info = __this_cpu_read(eh_key);
+	if (!info) {
+		info = static_cast<__cxa_thread_info *>(kmalloc(sizeof(__cxa_thread_info), GFP_ATOMIC));
+		__this_cpu_write(eh_key, info);
+	}
+	return info;
+#else
 	if ((0 == pthread_once) || pthread_once(&once_control, init_key))
 	{
 		fakeTLS = true;
@@ -401,6 +438,7 @@ static __cxa_thread_info *thread_info()
 		pthread_setspecific(eh_key, info);
 	}
 	return info;
+#endif
 }
 /**
  * Fast version of thread_info().  May fail if thread_info() is not called on
@@ -408,8 +446,12 @@ static __cxa_thread_info *thread_info()
  */
 static __cxa_thread_info *thread_info_fast()
 {
+#ifdef __KERNEL__
+	return __this_cpu_read(eh_key);
+#else
 	if (fakeTLS) { return &singleThreadInfo; }
 	return static_cast<__cxa_thread_info*>(pthread_getspecific(eh_key));
+#endif
 }
 /**
  * ABI function returning the __cxa_eh_globals structure.
@@ -427,6 +469,7 @@ extern "C" __cxa_eh_globals *ABI_NAMESPACE::__cxa_get_globals_fast(void)
 	return &(thread_info_fast()->globals);
 }
 
+#ifndef __KERNEL__
 /**
  * An emergency allocation reserved for when malloc fails.  This is treated as
  * 16 buffers of 1KB each.
@@ -532,9 +575,14 @@ static void emergency_malloc_free(char *ptr)
 	pthread_cond_signal(&emergency_malloc_wait);
 	pthread_mutex_unlock(&emergency_malloc_lock);
 }
+#endif
 
 static char *alloc_or_die(size_t size)
 {
+#ifdef __KERNEL__
+	/* XXX: New __GFP_NOFAIL users are not allowed, so what do we do? */
+	return static_cast<char *>(kmalloc(size, GFP_ATOMIC));
+#else
 	char *buffer = static_cast<char*>(calloc(1, size));
 
 	// If calloc() doesn't want to give us any memory, try using an emergency
@@ -551,9 +599,13 @@ static char *alloc_or_die(size_t size)
 		}
 	}
 	return buffer;
+#endif
 }
 static void free_exception(char *e)
 {
+#ifdef __KERNEL__
+	kfree(e);
+#else
 	// If this allocation is within the address range of the emergency buffer,
 	// don't call free() because it was not allocated with malloc()
 	if ((e > emergency_buffer) &&
@@ -565,6 +617,7 @@ static void free_exception(char *e)
 	{
 		free(e);
 	}
+#endif
 }
 
 /**
@@ -575,6 +628,9 @@ static void free_exception(char *e)
  */
 extern "C" void *__cxa_allocate_exception(size_t thrown_size)
 {
+#ifdef __KERNEL__
+	WARN_ON(thrown_size > 1024);
+#endif
 	size_t size = thrown_size + sizeof(__cxa_exception);
 	char *buffer = alloc_or_die(size);
 	return buffer+sizeof(__cxa_exception);
@@ -634,7 +690,11 @@ static void releaseException(__cxa_exception *exception)
 void __cxa_free_dependent_exception(void *thrown_exception)
 {
 	__cxa_dependent_exception *ex = reinterpret_cast<__cxa_dependent_exception*>(thrown_exception) - 1;
+#ifdef __KERNEL__
+	BUG_ON(!isDependentException(ex->unwindHeader.exception_class));
+#else
 	assert(isDependentException(ex->unwindHeader.exception_class));
+#endif
 	if (ex->primaryException)
 	{
 		releaseException(realExceptionFromException(reinterpret_cast<__cxa_exception*>(ex)));
@@ -652,6 +712,8 @@ void __cxa_free_dependent_exception(void *thrown_exception)
  */
 static _Unwind_Reason_Code trace(struct _Unwind_Context *context, void *c)
 {
+#ifdef __KERNEL__
+#else
 	Dl_info myinfo;
 	int mylookup =
 		dladdr(reinterpret_cast<void *>(__cxa_current_exception_type), &myinfo);
@@ -664,6 +726,7 @@ static _Unwind_Reason_Code trace(struct _Unwind_Context *context, void *c)
 			printf("%p:%s() in %s\n", ip, info.dli_sname, info.dli_fname);
 		}
 	}
+#endif
 	return _URC_CONTINUE_UNWIND;
 }
 
@@ -684,14 +747,25 @@ static void report_failure(_Unwind_Reason_Code err, __cxa_exception *thrown_exce
 	{
 		default: break;
 		case _URC_FATAL_PHASE1_ERROR:
+#ifdef __KERNEL__
+			printk(KERN_ERR "Fatal error during phase 1 unwinding\n");
+#else
 			fprintf(stderr, "Fatal error during phase 1 unwinding\n");
+#endif
 			break;
 #if !defined(__arm__) || defined(__ARM_DWARF_EH__)
 		case _URC_FATAL_PHASE2_ERROR:
+#ifdef __KERNEL__
+			printk(KERN_ERR "Fatal error during phase 2 unwinding\n");
+#else
 			fprintf(stderr, "Fatal error during phase 2 unwinding\n");
+#endif
 			break;
 #endif
 		case _URC_END_OF_STACK:
+#ifdef __KERNEL__
+			panic("Terminating due to uncaught exception");
+#else
 			__cxa_begin_catch (&(thrown_exception->unwindHeader));
  			std::terminate();
 			fprintf(stderr, "Terminating due to uncaught exception %p", 
@@ -726,6 +800,7 @@ static void report_failure(_Unwind_Reason_Code err, __cxa_exception *thrown_exce
 
 			// Just abort. No need to call std::terminate for the second time
 			abort();
+#endif
 			break;
 	}
 	std::terminate();
@@ -733,6 +808,8 @@ static void report_failure(_Unwind_Reason_Code err, __cxa_exception *thrown_exce
 
 static void throw_exception(__cxa_exception *ex)
 {
+printk(KERN_ERR "@@@ throw_exception() returns to %p, frame address %p\n", __builtin_return_address(0), __builtin_frame_address(0));
+
 	__cxa_thread_info *info = thread_info();
 	ex->unexpectedHandler = info->unexpectedHandler;
 	if (0 == ex->unexpectedHandler)
@@ -836,12 +913,16 @@ extern "C" void __cxa_rethrow()
 	// we can skip the top stack frame when unwinding.
 	__cxa_exception *ex = globals->caughtExceptions;
 
+#ifdef __KERNEL__
+	BUG_ON(!ex);
+#else
 	if (0 == ex)
 	{
 		fprintf(stderr,
 		        "Attempting to rethrow an exception that doesn't exist!\n");
 		std::terminate();
 	}
+#endif
 
 	if (ti->foreign_exception_state != __cxa_thread_info::none)
 	{
@@ -852,7 +933,11 @@ extern "C" void __cxa_rethrow()
 		return;
 	}
 
+#ifdef __KERNEL__
+	BUG_ON(!(ex->handlerCount > 0));
+#else
 	assert(ex->handlerCount > 0 && "Rethrowing uncaught exception!");
+#endif
 
 	// ex->handlerCount will be decremented in __cxa_end_catch in enclosing
 	// catch block
@@ -1276,7 +1361,11 @@ extern "C" void __cxa_end_catch()
 	__cxa_eh_globals *globals = &ti->globals;
 	__cxa_exception *ex = globals->caughtExceptions;
 
+#ifdef __KERNEL__
+	BUG_ON(ex == 0);
+#else
 	assert(0 != ex && "Ending catch when no exception is on the stack!");
+#endif
 	
 	if (ti->foreign_exception_state != __cxa_thread_info::none)
 	{

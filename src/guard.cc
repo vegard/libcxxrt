@@ -40,11 +40,20 @@
  * is heavily optimised towards the case where the static has already been
  * initialised.  
  */
+#ifdef __KERNEL__
+extern "C" {
+#include <linux/bug.h>
+#include <linux/sched.h>
+#include <linux/types.h>
+}
+#else
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <assert.h>
+#endif
+
 #include "atomic.h"
 
 // Older GCC doesn't define __LITTLE_ENDIAN__
@@ -151,14 +160,22 @@ extern "C" int __cxa_guard_acquire(volatile guard_t *guard_object)
 		    old == INITIALISED)
 			return 0;
 
+#ifdef __KERNEL__
+		BUG_ON(old != LOCKED);
+#else
 		assert(old == LOCKED);
+#endif
 		// Another thread holds the lock.
 		// If lock and init bit are in different words, check
 		// if we are done before yielding and looping.
 		if (INIT_PART(guard_object) != LOCK_PART(guard_object) &&
 		    INITIALISED == *INIT_PART(guard_object))
 			return 0;
+#ifdef __KERNEL__
+		schedule();
+#else
 		sched_yield();
+#endif
 	}
 }
 
@@ -171,7 +188,11 @@ extern "C" void __cxa_guard_abort(volatile guard_t *guard_object)
 	__attribute__((unused))
 	bool reset = __sync_bool_compare_and_swap(LOCK_PART(guard_object),
 	    LOCKED, INITIAL);
+#ifdef __KERNEL__
+	BUG_ON(!reset);
+#else
 	assert(reset);
+#endif
 }
 /**
  * Releases the guard and marks the object as initialised.  This function is
@@ -187,7 +208,11 @@ extern "C" void __cxa_guard_release(volatile guard_t *guard_object)
 	__attribute__((unused))
 	bool reset = __sync_bool_compare_and_swap(INIT_PART(guard_object),
 	    old, INITIALISED);
+#ifdef __KERNEL__
+	BUG_ON(!reset);
+#else
 	assert(reset);
+#endif
 	if (INIT_PART(guard_object) != LOCK_PART(guard_object))
 		*LOCK_PART(guard_object) = INITIAL;
 }

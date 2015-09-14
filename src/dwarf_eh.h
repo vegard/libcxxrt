@@ -31,7 +31,9 @@
  * language-specific code.  It can be used in any personality function for the
  * Itanium ABI.
  */
+#ifndef __KERNEL__
 #include <assert.h>
+#endif
 
 // TODO: Factor out Itanium / ARM differences.  We probably want an itanium.h
 // and arm.h that can be included by this file depending on the target ABI.
@@ -47,7 +49,12 @@
 #	include "unwind.h"
 #endif
 
+#ifdef __KERNEL__
+#include <linux/bug.h>
+#include <linux/types.h>
+#else
 #include <stdint.h>
+#endif
 
 /// Type used for pointers into DWARF data
 typedef unsigned char *dw_eh_ptr_t;
@@ -133,7 +140,12 @@ static inline int dwarf_size_of_fixed_size_field(unsigned char type)
 {
 	switch (get_encoding(type))
 	{
-		default: abort();
+		default:
+#ifdef __KERNEL__
+			BUG();
+#else
+			abort();
+#endif
 		case DW_EH_PE_sdata2: 
 		case DW_EH_PE_udata2: return 2;
 		case DW_EH_PE_sdata4:
@@ -164,7 +176,11 @@ static uint64_t read_leb128(dw_eh_ptr_t *data, int *b)
 	{
 		// This check is a bit too strict - we should also check the highest
 		// bit of the digit.
+#ifdef __KERNEL__
+		BUG_ON(!(bit < sizeof(uint64_t) * 8));
+#else
 		assert(bit < sizeof(uint64_t) * 8);
+#endif
 		// Get the base 128 digit 
 		digit = (**data) & 0x7f;
 		// Add it to the current value
@@ -235,14 +251,23 @@ static uint64_t read_value(char encoding, dw_eh_ptr_t *data)
 		READ(DW_EH_PE_sdata2, int16_t)
 		READ(DW_EH_PE_sdata4, int32_t)
 		READ(DW_EH_PE_sdata8, int64_t)
+#ifdef __KERNEL__
+		READ(DW_EH_PE_absptr, uintptr_t)
+#else
 		READ(DW_EH_PE_absptr, intptr_t)
+#endif
 #undef READ
 		// Read variable-length types
 		case DW_EH_PE_sleb128:
 			return read_sleb128(data);
 		case DW_EH_PE_uleb128:
 			return read_uleb128(data);
-		default: abort();
+		default:
+#ifdef __KERNEL__
+			BUG();
+#else
+			abort();
+#endif
 	}
 }
 

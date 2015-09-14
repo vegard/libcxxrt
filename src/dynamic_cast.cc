@@ -25,7 +25,10 @@
  */
 
 #include "typeinfo.h"
+
+#ifndef __KERNEL__
 #include <stdio.h>
+#endif
 
 using namespace ABI_NAMESPACE;
 

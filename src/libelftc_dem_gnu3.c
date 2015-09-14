@@ -23,6 +23,13 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#ifdef __KERNEL__
+#include <linux/bug.h>
+#include <linux/ctype.h>
+#include <linux/types.h>
+#include <linux/string.h>
+#include <linux/slab.h>
+#else
 #include <sys/types.h>
 #include <assert.h>
 #include <ctype.h>
@@ -32,6 +39,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#endif
+
+#define assert(cond) BUG_ON(!(cond))
+#define malloc(size) kmalloc((size), GFP_ATOMIC)
+#define free(ptr) kfree((ptr))
+#define strdup(str) kstrdup((str), GFP_ATOMIC)
 
 /**
  * @file cpp_demangle.c
@@ -53,7 +66,11 @@ struct vector_str {
 	char		**container;
 };
 
+#ifdef __KERNEL__
+#define BUFFER_GROWFACTOR	2
+#else
 #define BUFFER_GROWFACTOR	1.618
+#endif
 #define VECTOR_DEF_CAPACITY	8
 #define	ELFTC_ISDIGIT(C) 	(isdigit((C) & 0xFF))
 
@@ -383,8 +400,10 @@ static int	cpp_demangle_data_init(struct cpp_demangle_data *,
 		    const char *);
 static int	cpp_demangle_get_subst(struct cpp_demangle_data *, size_t);
 static int	cpp_demangle_get_tmpl_param(struct cpp_demangle_data *, size_t);
+#ifndef __KERNEL__
 static int	cpp_demangle_push_fp(struct cpp_demangle_data *,
 		    char *(*)(const char *, size_t));
+#endif
 static int	cpp_demangle_push_str(struct cpp_demangle_data *, const char *,
 		    size_t);
 static int	cpp_demangle_push_subst(struct cpp_demangle_data *,
@@ -433,11 +452,13 @@ static int	cpp_demangle_read_type_flat(struct cpp_demangle_data *,
 		    char **);
 static int	cpp_demangle_read_uqname(struct cpp_demangle_data *);
 static int	cpp_demangle_read_v_offset(struct cpp_demangle_data *);
+#ifndef __KERNEL__
 static char	*decode_fp_to_double(const char *, size_t);
 static char	*decode_fp_to_float(const char *, size_t);
 static char	*decode_fp_to_float128(const char *, size_t);
 static char	*decode_fp_to_float80(const char *, size_t);
 static char	*decode_fp_to_long_double(const char *, size_t);
+#endif
 static int	hex_to_dec(char);
 static void	vector_read_cmd_dest(struct vector_read_cmd *);
 static int	vector_read_cmd_find(struct vector_read_cmd *, enum read_cmd);
@@ -1009,6 +1030,13 @@ cpp_demangle_read_expr_primary(struct cpp_demangle_data *ddata)
 			return (0);
 		};
 
+#ifdef __KERNEL__
+	case 'd':
+	case 'e':
+	case 'f':
+	case 'g':
+		BUG();
+#else
 	case 'd':
 		++ddata->cur;
 		return (cpp_demangle_push_fp(ddata, decode_fp_to_double));
@@ -1030,6 +1058,7 @@ cpp_demangle_read_expr_primary(struct cpp_demangle_data *ddata)
 			return (cpp_demangle_push_fp(ddata,
 			    decode_fp_to_double));
 		return (cpp_demangle_push_fp(ddata, decode_fp_to_float128));
+#endif
 
 	case 'i':
 	case 'j':
@@ -1969,9 +1998,13 @@ cpp_demangle_read_number(struct cpp_demangle_data *ddata, long *rtn)
 	if (ELFTC_ISDIGIT(*ddata->cur) == 0)
 		return (0);
 
+#ifdef __KERNEL__
+	if ((len = kstrtol(ddata->cur, 10, NULL)) < 0)
+#else
 	errno = 0;
 	if ((len = strtol(ddata->cur, (char **) NULL, 10)) == 0 &&
 	    errno != 0)
+#endif
 		return (0);
 
 	while (ELFTC_ISDIGIT(*ddata->cur) != 0)
@@ -1995,8 +2028,12 @@ cpp_demangle_read_number_as_string(struct cpp_demangle_data *ddata, char **str)
 		return (0);
 	}
 
+#ifdef __KERNEL__
+	if (!(*str = kasprintf(GFP_ATOMIC, "%ld", n))) {
+#else
 	if (asprintf(str, "%ld", n) < 0) {
 		*str = NULL;
+#endif
 		return (0);
 	}
 
@@ -2247,10 +2284,15 @@ cpp_demangle_read_subst(struct cpp_demangle_data *ddata)
 	if (*ddata->cur == '_')
 		return (cpp_demangle_get_subst(ddata, 0));
 	else {
+#ifdef __KERNEL__
+		BUG(); // kstrtol doesn't support base 36
+		if ((nth = kstrtol(ddata->cur, 36, 0)) < 0)
+#else
 		errno = 0;
 		/* substitution number is base 36 */
 		if ((nth = strtol(ddata->cur, (char **) NULL, 36)) == 0 &&
 		    errno != 0)
+#endif
 			return (0);
 
 		/* first was '_', so increase one */
@@ -2465,9 +2507,13 @@ cpp_demangle_read_tmpl_param(struct cpp_demangle_data *ddata)
 		return (cpp_demangle_get_tmpl_param(ddata, 0));
 	else {
 
+#ifdef __KERNEL__
+		if ((nth = kstrtol(ddata->cur, 36, 0)) < 0)
+#else
 		errno = 0;
 		if ((nth = strtol(ddata->cur, (char **) NULL, 36)) == 0 &&
 		    errno != 0)
+#endif
 			return (0);
 
 		/* T_ is first */
@@ -3438,6 +3484,7 @@ cpp_demangle_read_v_offset(struct cpp_demangle_data *ddata)
 	return (!cpp_demangle_read_offset_number(ddata));
 }
 
+#ifndef __KERNEL__
 /*
  * Decode floating point representation to string
  * Return new allocated string or NULL
@@ -3699,6 +3746,7 @@ again:
 
 	return (rtn);
 }
+#endif
 
 /* Simple hex to integer function used by decode_to_* function. */
 static int

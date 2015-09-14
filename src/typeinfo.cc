@@ -25,9 +25,17 @@
  */
 
 #include "typeinfo.h"
+
+#ifdef __KERNEL__
+extern "C" {
+#include <linux/slab.h>
+#include <linux/string.h>
+}
+#else
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#endif
 
 using std::type_info;
 
@@ -96,7 +104,11 @@ extern "C" char* __cxa_demangle(const char* mangled_name,
 		}
 		if (*n < len+1)
 		{
+#ifdef __KERNEL__
+			buf = static_cast<char*>(krealloc(buf, len+1, GFP_ATOMIC));
+#else
 			buf = static_cast<char*>(realloc(buf, len+1));
+#endif
 		}
 		if (0 != buf)
 		{
@@ -118,7 +130,11 @@ extern "C" char* __cxa_demangle(const char* mangled_name,
 				*status = -1;
 			}
 		}
+#ifdef __KERNEL__
+		kfree(demangled);
+#else
 		free(demangled);
+#endif
 	}
 	else
 	{
